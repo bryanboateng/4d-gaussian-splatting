@@ -18,7 +18,7 @@ print(
 )
 
 for obj in bpy.data.objects:
-    if obj.type == 'CAMERA':
+    if obj.type == "CAMERA":
         bpy.data.objects.remove(obj, do_unlink=True)
 
 cameras = []
@@ -41,7 +41,7 @@ for i in range(camera_count):
     )
     bpy.context.collection.objects.link(camera)
     camera.location = mathutils.Vector((x, y, z))
-    rot_quat = camera.location.to_track_quat('Z', 'Y')
+    rot_quat = camera.location.to_track_quat("Z", "Y")
     camera.rotation_euler = rot_quat.to_euler()
     cameras.append(camera)
 
