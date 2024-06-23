@@ -7,6 +7,13 @@ output_directory_path = "/Users/bryanboateng/Uni/4d-gaussian-splatting/data/sant
 
 bpy.ops.wm.open_mainfile(filepath=blend_file_path)
 
+animation_duration = (
+    bpy.context.scene.frame_end - bpy.context.scene.frame_start + 1
+) / bpy.context.scene.render.fps
+print(
+    f"Animation duration: {animation_duration} s at {bpy.context.scene.render.fps} FPS"
+)
+
 cameras = []
 camera_count = 12
 for i in range(camera_count):
@@ -21,11 +28,8 @@ for i in range(camera_count):
     camera.rotation_euler = (math.pi / 2, 0, angle + math.pi / 2)
     cameras.append(camera)
 
-frame_start = bpy.context.scene.frame_start
-frame_end = bpy.context.scene.frame_end
-
 bpy.context.scene.render.image_settings.file_format = "JPEG"
-for frame in range(frame_start, 2):
+for frame in range(bpy.context.scene.frame_start, bpy.context.scene.frame_end + 1):
     bpy.context.scene.frame_set(frame)
     for index, camera in enumerate(cameras):
         bpy.context.scene.camera = camera
