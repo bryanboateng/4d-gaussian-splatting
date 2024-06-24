@@ -66,33 +66,22 @@ def method_name():
     test_metadata = Metadata()
     bpy.context.scene.render.image_settings.file_format = "JPEG"
     for frame in range(bpy.context.scene.frame_start, bpy.context.scene.frame_end + 1):
+        bpy.context.scene.frame_set(frame)
         train_metadata.create_new_frame()
         test_metadata.create_new_frame()
+        for index, camera in enumerate(cameras):
+            bpy.context.scene.camera = camera
+            wefw = os.path.join(str(index), f"{frame - 1:06}.jpg")
+            render_scene(os.path.join(output_directory_path, "ims", wefw))
+            export_metadata(camera, index, test_metadata, train_metadata, wefw)
+
+    change_to_segmentation_mask_mode()
+    for frame in range(bpy.context.scene.frame_start, bpy.context.scene.frame_end + 1):
         bpy.context.scene.frame_set(frame)
         for index, camera in enumerate(cameras):
             bpy.context.scene.camera = camera
             wefw = os.path.join(str(index), f"{frame - 1:06}.jpg")
-            bpy.context.scene.render.filepath = os.path.join(
-                output_directory_path, "ims", wefw
-            )
-            bpy.ops.render.render(write_still=True)
-            intrinsic_matrix = get_intrinsic_matrix(camera)
-            extrinsic_matrix = get_extrinsic_matrix(camera)
-            if index % 10 == 0:
-                test_metadata.add_capture_to_latest_frame(
-                    camera_id=index,
-                    file_name=wefw,
-                    intrinsic_matrix=intrinsic_matrix,
-                    extrinsic_matrix=extrinsic_matrix,
-                )
-                test_metadata.export("test_meta.json")
-            train_metadata.add_capture_to_latest_frame(
-                camera_id=index,
-                file_name=wefw,
-                intrinsic_matrix=intrinsic_matrix,
-                extrinsic_matrix=extrinsic_matrix,
-            )
-            train_metadata.export("train_meta.json")
+            render_scene(os.path.join(output_directory_path, "seg", wefw))
 
 
 def delete_all_cameras():
@@ -126,6 +115,64 @@ def create_cameras():
         camera.rotation_euler = rot_quat.to_euler()
         cameras.append(camera)
     return cameras
+
+
+def render_scene(output_path: str):
+    bpy.context.scene.render.filepath = output_path
+    bpy.ops.render.render(write_still=True)
+
+
+def change_to_segmentation_mask_mode():
+    for obj in bpy.data.objects:
+        if obj.type == "MESH":
+            for slot in obj.material_slots:
+                mat = slot.material
+                if mat:
+                    mat.use_nodes = True
+                    nodes = mat.node_tree.nodes
+                    links = mat.node_tree.links
+
+                    # Clear existing nodes
+                    for node in nodes:
+                        nodes.remove(node)
+
+                    emission_node = nodes.new(type="ShaderNodeEmission")
+                    output_node = nodes.new(type="ShaderNodeOutputMaterial")
+                    links.new(emission_node.outputs[0], output_node.inputs[0])
+
+                    # Set color to white
+                    emission_node.inputs[0].default_value = (1, 1, 1, 1)
+    bpy.context.scene.world.node_tree.nodes["Background"].inputs[0].default_value = (
+        0,
+        0,
+        0,
+        1,
+    )
+    bpy.context.scene.display_settings.display_device = "sRGB"
+    bpy.context.scene.view_settings.view_transform = "Standard"
+    bpy.context.scene.view_settings.look = "None"
+    bpy.context.scene.view_settings.exposure = 0
+    bpy.context.scene.view_settings.gamma = 1
+
+
+def export_metadata(camera, index, test_metadata, train_metadata, wefw):
+    intrinsic_matrix = get_intrinsic_matrix(camera)
+    extrinsic_matrix = get_extrinsic_matrix(camera)
+    if index % 10 == 0:
+        test_metadata.add_capture_to_latest_frame(
+            camera_id=index,
+            file_name=wefw,
+            intrinsic_matrix=intrinsic_matrix,
+            extrinsic_matrix=extrinsic_matrix,
+        )
+        test_metadata.export("test_meta.json")
+    train_metadata.add_capture_to_latest_frame(
+        camera_id=index,
+        file_name=wefw,
+        intrinsic_matrix=intrinsic_matrix,
+        extrinsic_matrix=extrinsic_matrix,
+    )
+    train_metadata.export("train_meta.json")
 
 
 def get_intrinsic_matrix(camera):
@@ -196,7 +243,7 @@ def get_extrinsic_matrix(camera):
 
 
 blend_file_path = "/Users/bryanboateng/Uni/4d-gaussian-splatting/santa_pink.blend"
-output_directory_path = "/Users/bryanboateng/Uni/4d-gaussian-splatting/data/santa"
+output_directory_path = "/Users/bryanboateng/Uni/4d-gaussian-splatting/data/santa_pink"
 camera_count = 12
 radius = 10
 resolution_x_in_px, resolution_y_in_px = get_scaled_resolution()
