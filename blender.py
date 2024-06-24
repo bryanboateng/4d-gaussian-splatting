@@ -5,6 +5,43 @@ import mathutils
 import os
 
 
+class Metadata:
+    def __init__(self):
+        self.intrinsic_matrices = []
+        self.extrinsic_matrices = []
+        self.file_names = []
+        self.camera_ids = []
+
+    def create_new_frame(self):
+        self.camera_ids.append([])
+        self.file_names.append([])
+        self.intrinsic_matrices.append([])
+        self.extrinsic_matrices.append([])
+
+    def add_capture_to_latest_frame(
+        self, camera_id, intrinsic_matrix, extrinsic_matrix, file_name
+    ):
+        self.intrinsic_matrices[-1].append(intrinsic_matrix)
+        self.extrinsic_matrices[-1].append(extrinsic_matrix)
+        self.file_names[-1].append(file_name)
+        self.camera_ids[-1].append(camera_id)
+
+    def export(self, filename: str):
+        with open(os.path.join(output_directory_path, filename), "w") as file:
+            json.dump(
+                {
+                    "w": resolution_x_in_px,
+                    "h": resolution_y_in_px,
+                    "k": self.intrinsic_matrices,
+                    "w2c": self.extrinsic_matrices,
+                    "fn": self.file_names,
+                    "cam_id": self.camera_ids,
+                },
+                file,
+                indent=4,
+            )
+
+
 def get_scaled_resolution():
     scale_percentage = bpy.context.scene.render.resolution_percentage / 100
     return (
@@ -25,16 +62,12 @@ def method_name():
 
     delete_all_cameras()
     cameras = create_cameras()
-    intrinsic_matrices = []
-    extrinsic_matrices = []
-    file_names = []
-    camera_ids = []
+    train_metadata = Metadata()
+    test_metadata = Metadata()
     bpy.context.scene.render.image_settings.file_format = "JPEG"
     for frame in range(bpy.context.scene.frame_start, bpy.context.scene.frame_end + 1):
-        camera_ids.append([])
-        file_names.append([])
-        intrinsic_matrices.append([])
-        extrinsic_matrices.append([])
+        train_metadata.create_new_frame()
+        test_metadata.create_new_frame()
         bpy.context.scene.frame_set(frame)
         for index, camera in enumerate(cameras):
             bpy.context.scene.camera = camera
@@ -43,25 +76,23 @@ def method_name():
                 output_directory_path, "ims", wefw
             )
             bpy.ops.render.render(write_still=True)
-            intrinsic_matrices[-1].append(get_intrinsic_matrix(camera))
-            extrinsic_matrices[-1].append(get_extrinsic_matrix(camera))
-            file_names[-1].append(wefw)
-            camera_ids[-1].append(index)
-            with open(
-                os.path.join(output_directory_path, "train_meta.json"), "w"
-            ) as json_file:
-                json.dump(
-                    {
-                        "w": resolution_x_in_px,
-                        "h": resolution_y_in_px,
-                        "k": intrinsic_matrices,
-                        "w2c": extrinsic_matrices,
-                        "fn": file_names,
-                        "cam_id": camera_ids,
-                    },
-                    json_file,
-                    indent=4,
+            intrinsic_matrix = get_intrinsic_matrix(camera)
+            extrinsic_matrix = get_extrinsic_matrix(camera)
+            if index % 10 == 0:
+                test_metadata.add_capture_to_latest_frame(
+                    camera_id=index,
+                    file_name=wefw,
+                    intrinsic_matrix=intrinsic_matrix,
+                    extrinsic_matrix=extrinsic_matrix,
                 )
+                test_metadata.export("test_meta.json")
+            train_metadata.add_capture_to_latest_frame(
+                camera_id=index,
+                file_name=wefw,
+                intrinsic_matrix=intrinsic_matrix,
+                extrinsic_matrix=extrinsic_matrix,
+            )
+            train_metadata.export("train_meta.json")
 
 
 def delete_all_cameras():
