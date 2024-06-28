@@ -2,6 +2,7 @@ import copy
 import json
 import os
 from dataclasses import dataclass, MISSING
+from random import randint
 
 import torch
 import wandb
@@ -146,15 +147,13 @@ class Xyz(Command):
             losses = []
             while timestep_capture_buffer:
                 with torch.no_grad():
-                    capture = get_random_element(
-                        input_list=timestep_capture_buffer,
-                        fallback_list=timestep_captures,
+                    capture = timestep_capture_buffer.pop(
+                        randint(0, len(timestep_capture_buffer) - 1)
                     )
                     loss = self.get_loss(updated_parameters, capture)
                     losses.append(loss.item())
-
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
-        ## Random Training
+
         timestep_captures = []
         for timestep in range(sequence_length):
             timestep_captures += [
