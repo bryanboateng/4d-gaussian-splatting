@@ -14,23 +14,7 @@ import wandb
 from command import Command
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera
-
-
-def get_dataset(t, md, seq):
-    dataset = []
-    for c in range(len(md["fn"][t])):
-        w, h, k, w2c = md["w"], md["h"], md["k"][t][c], md["w2c"][t][c]
-        cam = setup_camera(w, h, k, w2c, near=1.0, far=100)
-        fn = md["fn"][t][c]
-        im = np.array(copy.deepcopy(Image.open(f"./data/{seq}/ims/{fn}")))
-        im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
-        seg = np.array(
-            copy.deepcopy(Image.open(f"./data/{seq}/seg/{fn.replace('.jpg', '.png')}"))
-        ).astype(np.float32)
-        seg = torch.tensor(seg).float().cuda()
-        seg_col = torch.stack((seg, torch.zeros_like(seg), 1 - seg))
-        dataset.append({"cam": cam, "im": im, "seg": seg_col, "id": c})
-    return dataset
+from train_commons import load_timestep_captures
 
 
 def get_batch(todo_dataset, dataset):
@@ -132,11 +116,13 @@ class Xyz(Command):
         optimizer = torch.optim.Adam(params=deformation_network.parameters(), lr=1e-3)
 
         for timestep in range(sequence_length):
-            dataset = get_dataset(timestep, dataset_metadata, self.sequence_name)
+            timestep_captures = load_timestep_captures(
+                dataset_metadata, timestep, self.data_directory_path, self.sequence_name
+            )
             dataset_queue = []
 
             for i in tqdm(range(10_000)):
-                X = get_batch(dataset_queue, dataset)
+                X = get_batch(dataset_queue, timestep_captures)
 
                 delta = deformation_network(
                     torch.cat((parameters["means"], parameters["rotations"]), dim=1),
@@ -165,24 +151,31 @@ class Xyz(Command):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            dataset_queue = dataset.copy()
+            dataset_queue = timestep_captures.copy()
             losses = []
             while dataset_queue:
                 with torch.no_grad():
-                    X = get_batch(dataset_queue, dataset)
+                    X = get_batch(dataset_queue, timestep_captures)
 
                     loss = get_loss(updated_params, X)
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
         ## Random Training
-        dataset = []
+        timestep_captures = []
         for timestep in range(sequence_length):
-            dataset += [get_dataset(timestep, dataset_metadata, self.sequence_name)]
+            timestep_captures += [
+                load_timestep_captures(
+                    dataset_metadata,
+                    timestep,
+                    self.data_directory_path,
+                    self.sequence_name,
+                )
+            ]
         for i in tqdm(range(10_000)):
-            di = torch.randint(0, len(dataset), (1,))
-            si = torch.randint(0, len(dataset[0]), (1,))
-            X = dataset[di][si]
+            di = torch.randint(0, len(timestep_captures), (1,))
+            si = torch.randint(0, len(timestep_captures[0]), (1,))
+            X = timestep_captures[di][si]
 
             delta = deformation_network(
                 torch.cat((parameters["means"], parameters["rotations"]), dim=1),
@@ -210,7 +203,7 @@ class Xyz(Command):
 
             optimizer.step()
             optimizer.zero_grad()
-        for d in dataset:
+        for d in timestep_captures:
             losses = []
             with torch.no_grad():
                 for X in d:

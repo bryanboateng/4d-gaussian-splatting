@@ -24,15 +24,7 @@ from helpers import (
     GaussianCloudParameterNames,
     Variables,
 )
-
-
-class Capture:
-    def __init__(
-        self, camera: Camera, image: torch.Tensor, segmentation_mask: torch.Tensor
-    ):
-        self.camera = camera
-        self.image = image
-        self.segmentation_mask = segmentation_mask
+from train_commons import Capture, load_timestep_captures
 
 
 @dataclass
@@ -522,70 +514,6 @@ class Trainer(Command):
             .float(),
         )
 
-    def _load_timestep_captures(self, timestamp: int, dataset_metadata):
-        timestep_data = []
-        for camera_index in range(len(dataset_metadata["fn"][timestamp])):
-            filename = dataset_metadata["fn"][timestamp][camera_index]
-            segmentation_mask = (
-                torch.tensor(
-                    np.array(
-                        copy.deepcopy(
-                            Image.open(
-                                os.path.join(
-                                    self.data_directory_path,
-                                    self.sequence_name,
-                                    "seg",
-                                    filename.replace(".jpg", ".png"),
-                                )
-                            )
-                        )
-                    ).astype(np.float32)
-                )
-                .float()
-                .cuda()
-            )
-            timestep_data.append(
-                Capture(
-                    camera=Camera(
-                        id_=camera_index,
-                        image_width=dataset_metadata["w"],
-                        image_height=dataset_metadata["h"],
-                        near_clipping_plane_distance=1,
-                        far_clipping_plane_distance=100,
-                        intrinsic_matrix=dataset_metadata["k"][timestamp][camera_index],
-                        extrinsic_matrix=dataset_metadata["w2c"][timestamp][
-                            camera_index
-                        ],
-                    ),
-                    image=torch.tensor(
-                        np.array(
-                            copy.deepcopy(
-                                Image.open(
-                                    os.path.join(
-                                        self.data_directory_path,
-                                        self.sequence_name,
-                                        "ims",
-                                        filename,
-                                    )
-                                )
-                            )
-                        )
-                    )
-                    .float()
-                    .cuda()
-                    .permute(2, 0, 1)
-                    / 255,
-                    segmentation_mask=torch.stack(
-                        (
-                            segmentation_mask,
-                            torch.zeros_like(segmentation_mask),
-                            1 - segmentation_mask,
-                        )
-                    ),
-                )
-            )
-        return timestep_data
-
     def save_sequence(self, gaussian_cloud_parameters_sequence):
         to_save = {}
         for k in gaussian_cloud_parameters_sequence[0].keys():
@@ -627,7 +555,9 @@ class Trainer(Command):
         )
         gaussian_cloud_parameters_sequence = []
         for timestep in range(len(dataset_metadata["fn"])):
-            timestep_captures = self._load_timestep_captures(timestep, dataset_metadata)
+            timestep_captures = load_timestep_captures(
+                dataset_metadata, timestep, self.data_directory_path, self.sequence_name
+            )
             timestep_capture_buffer = []
             is_initial_timestep = timestep == 0
             if not is_initial_timestep:
