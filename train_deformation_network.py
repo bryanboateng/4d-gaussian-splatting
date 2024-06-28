@@ -121,14 +121,14 @@ class Xyz(Command):
         optimizer = torch.optim.Adam(params=deformation_network.parameters(), lr=1e-3)
 
         for timestep in range(sequence_length):
-            timestep_captures = load_timestep_captures(
+            timestep_capture_list = load_timestep_captures(
                 dataset_metadata, timestep, self.data_directory_path, self.sequence_name
             )
             timestep_capture_buffer = []
 
             for _ in tqdm(range(10_000)):
                 capture = get_random_element(
-                    input_list=timestep_capture_buffer, fallback_list=timestep_captures
+                    input_list=timestep_capture_buffer, fallback_list=timestep_capture_list
                 )
                 updated_parameters = self._update_parameters(
                     deformation_network, parameters, timestep
@@ -143,7 +143,7 @@ class Xyz(Command):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            timestep_capture_buffer = timestep_captures.copy()
+            timestep_capture_buffer = timestep_capture_list.copy()
             losses = []
             while timestep_capture_buffer:
                 with torch.no_grad():
@@ -154,9 +154,9 @@ class Xyz(Command):
                     losses.append(loss.item())
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
 
-        timestep_captures = []
+        list_of_timestep_capture_lists = []
         for timestep in range(sequence_length):
-            timestep_captures += [
+            list_of_timestep_capture_lists += [
                 load_timestep_captures(
                     dataset_metadata,
                     timestep,
@@ -165,9 +165,9 @@ class Xyz(Command):
                 )
             ]
         for _ in tqdm(range(10_000)):
-            random_timestep = torch.randint(0, len(timestep_captures), (1,))
-            random_camera_index = torch.randint(0, len(timestep_captures[0]), (1,))
-            capture = timestep_captures[random_timestep][random_camera_index]
+            random_timestep = torch.randint(0, len(list_of_timestep_capture_lists), (1,))
+            random_camera_index = torch.randint(0, len(list_of_timestep_capture_lists[0]), (1,))
+            capture = list_of_timestep_capture_lists[random_timestep][random_camera_index]
 
             updated_parameters = self._update_parameters(
                 deformation_network, parameters, random_timestep
@@ -181,10 +181,10 @@ class Xyz(Command):
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-        for d in timestep_captures:
+        for timestep_capture_list in list_of_timestep_capture_lists:
             losses = []
             with torch.no_grad():
-                for capture in d:
+                for capture in timestep_capture_list:
                     loss = self.get_loss(updated_parameters, capture)
                     losses.append(loss.item())
 
