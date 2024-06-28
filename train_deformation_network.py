@@ -1,27 +1,16 @@
+import copy
+import json
 import os
 from dataclasses import dataclass, MISSING
 
-import numpy as np
 import torch
-from torch import nn
-import json
-import copy
-from PIL import Image
-from random import randint
-from tqdm import tqdm
 import wandb
+from torch import nn
+from tqdm import tqdm
 
 from command import Command
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from helpers import setup_camera
 from train_commons import load_timestep_captures, get_random_element, Capture
-
-
-def get_batch(todo_dataset, dataset):
-    if not todo_dataset:
-        todo_dataset = dataset.copy()
-    curr_data = todo_dataset.pop(randint(0, len(todo_dataset) - 1))
-    return curr_data
 
 
 class DeformationNetwork(nn.Module):
@@ -176,25 +165,21 @@ class Xyz(Command):
                     self.sequence_name,
                 )
             ]
-        for i in tqdm(range(10_000)):
+        for _ in tqdm(range(10_000)):
             di = torch.randint(0, len(timestep_captures), (1,))
             si = torch.randint(0, len(timestep_captures[0]), (1,))
             capture = timestep_captures[di][si]
 
             updated_parameters = self._update_parameters(
-                deformation_network, parameters, timestep
+                deformation_network, parameters, di
             )
-
             loss = self.get_loss(updated_parameters, capture)
-
             wandb.log(
                 {
                     f"loss-new": loss.item(),
                 }
             )
-
             loss.backward()
-
             optimizer.step()
             optimizer.zero_grad()
         for d in timestep_captures:
