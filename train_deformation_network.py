@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, MISSING
 
 import numpy as np
 import torch
@@ -119,17 +119,18 @@ class MLP(nn.Module):
 
 @dataclass
 class Xyz(Command):
+    sequence_name: str = MISSING
+
     def run(self):
         wandb.init(project="new-dynamic-gaussians")
-        sequence_name = "basketball"
-        md = json.load(open(f"./data/{sequence_name}/train_meta.json", "r"))
+        md = json.load(open(f"./data/{self.sequence_name}/train_meta.json", "r"))
         seq_len = 20  # len(md['fn'])
         params = load_params("params.pth")
         mlp = MLP(7, seq_len).cuda()
         mlp_optimizer = torch.optim.Adam(params=mlp.parameters(), lr=1e-3)
         ## Initial Training
         for t in range(0, seq_len, 1):
-            dataset = get_dataset(t, md, sequence_name)
+            dataset = get_dataset(t, md, self.sequence_name)
             dataset_queue = []
 
             for i in tqdm(range(10_000)):
@@ -175,7 +176,7 @@ class Xyz(Command):
         ## Random Training
         dataset = []
         for t in range(20):
-            dataset += [get_dataset(t, md, sequence_name)]
+            dataset += [get_dataset(t, md, self.sequence_name)]
         for i in tqdm(range(10_000)):
             di = torch.randint(0, len(dataset), (1,))
             si = torch.randint(0, len(dataset[0]), (1,))
