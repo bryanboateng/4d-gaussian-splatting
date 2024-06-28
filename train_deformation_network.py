@@ -14,7 +14,7 @@ import wandb
 from command import Command
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera
-from train_commons import load_timestep_captures, get_random_element
+from train_commons import load_timestep_captures, get_random_element, Capture
 
 
 def get_batch(todo_dataset, dataset):
@@ -22,35 +22,6 @@ def get_batch(todo_dataset, dataset):
         todo_dataset = dataset.copy()
     curr_data = todo_dataset.pop(randint(0, len(todo_dataset) - 1))
     return curr_data
-
-
-def params2rendervar(params):
-    rendervar = {
-        "means3D": params["means"],
-        "colors_precomp": params["colors"],
-        "rotations": torch.nn.functional.normalize(params["rotations"]),
-        "opacities": torch.sigmoid(params["opacities"]),
-        "scales": torch.exp(params["scales"]),
-        "means2D": torch.zeros_like(params["means"], requires_grad=True, device="cuda")
-        + 0,
-    }
-    return rendervar
-
-
-def get_loss(params, batch):
-    rendervar = params2rendervar(params)
-    # rendervar['means2D'].retain_grad()
-
-    (
-        im,
-        _,
-        _,
-    ) = Renderer(
-        raster_settings=batch["cam"]
-    )(**rendervar)
-    loss = torch.nn.functional.l1_loss(im, batch["im"])
-
-    return loss
 
 
 class DeformationNetwork(nn.Module):
@@ -113,6 +84,33 @@ class Xyz(Command):
         updated_parameters["rotations"] += rotations_delta * learning_rate
         return updated_parameters
 
+    @staticmethod
+    def _create_gaussian_cloud(parameters):
+        return {
+            "means3D": parameters["means"],
+            "colors_precomp": parameters["colors"],
+            "rotations": torch.nn.functional.normalize(parameters["rotations"]),
+            "opacities": torch.sigmoid(parameters["opacities"]),
+            "scales": torch.exp(parameters["scales"]),
+            "means2D": torch.zeros_like(
+                parameters["means"], requires_grad=True, device="cuda"
+            )
+            + 0,
+        }
+
+    @staticmethod
+    def get_loss(parameters, target_capture: Capture):
+        gaussian_cloud = Xyz._create_gaussian_cloud(parameters)
+        # gaussian_cloud['means2D'].retain_grad()
+        (
+            rendered_image,
+            _,
+            _,
+        ) = Renderer(
+            raster_settings=target_capture.camera.gaussian_rasterization_settings
+        )(**gaussian_cloud)
+        return torch.nn.functional.l1_loss(rendered_image, target_capture.image)
+
     def _set_absolute_paths(self):
         self.data_directory_path = os.path.abspath(self.data_directory_path)
 
@@ -143,12 +141,10 @@ class Xyz(Command):
                 capture = get_random_element(
                     input_list=timestep_capture_buffer, fallback_list=timestep_captures
                 )
-
                 updated_parameters = self._update_parameters(
                     deformation_network, parameters, timestep
                 )
-
-                loss = get_loss(updated_parameters, capture)
+                loss = self.get_loss(updated_parameters, capture)
 
                 wandb.log(
                     {
@@ -167,7 +163,7 @@ class Xyz(Command):
                 with torch.no_grad():
                     capture = get_batch(timestep_capture_buffer, timestep_captures)
 
-                    loss = get_loss(updated_parameters, capture)
+                    loss = self.get_loss(updated_parameters, capture)
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
@@ -191,7 +187,7 @@ class Xyz(Command):
                 deformation_network, parameters, timestep
             )
 
-            loss = get_loss(updated_parameters, capture)
+            loss = self.get_loss(updated_parameters, capture)
 
             wandb.log(
                 {
@@ -207,7 +203,7 @@ class Xyz(Command):
             losses = []
             with torch.no_grad():
                 for capture in d:
-                    loss = get_loss(updated_parameters, capture)
+                    loss = self.get_loss(updated_parameters, capture)
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
