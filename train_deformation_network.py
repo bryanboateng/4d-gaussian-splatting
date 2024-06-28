@@ -47,6 +47,7 @@ class DeformationNetwork(nn.Module):
 class Xyz(Command):
     data_directory_path: str = MISSING
     sequence_name: str = MISSING
+    learning_rate = 0.01
 
     @staticmethod
     def _load_and_freeze_parameters(path: str):
@@ -54,24 +55,6 @@ class Xyz(Command):
         for parameter in parameters.values():
             parameter.requires_grad = False
         return parameters
-
-    @staticmethod
-    def _update_parameters(
-        deformation_network: DeformationNetwork, parameters, timestep
-    ):
-        delta = deformation_network(
-            torch.cat((parameters["means"], parameters["rotations"]), dim=1),
-            torch.tensor(timestep).cuda(),
-        )
-        means_delta = delta[:, :3]
-        rotations_delta = delta[:, 3:]
-        learning_rate = 0.01
-        updated_parameters = copy.deepcopy(parameters)
-        updated_parameters["means"] = updated_parameters["means"].detach()
-        updated_parameters["means"] += means_delta * learning_rate
-        updated_parameters["rotations"] = updated_parameters["rotations"].detach()
-        updated_parameters["rotations"] += rotations_delta * learning_rate
-        return updated_parameters
 
     @staticmethod
     def _create_gaussian_cloud(parameters):
@@ -102,6 +85,22 @@ class Xyz(Command):
 
     def _set_absolute_paths(self):
         self.data_directory_path = os.path.abspath(self.data_directory_path)
+
+    def _update_parameters(
+        self, deformation_network: DeformationNetwork, parameters, timestep
+    ):
+        delta = deformation_network(
+            torch.cat((parameters["means"], parameters["rotations"]), dim=1),
+            torch.tensor(timestep).cuda(),
+        )
+        means_delta = delta[:, :3]
+        rotations_delta = delta[:, 3:]
+        updated_parameters = copy.deepcopy(parameters)
+        updated_parameters["means"] = updated_parameters["means"].detach()
+        updated_parameters["means"] += means_delta * self.learning_rate
+        updated_parameters["rotations"] = updated_parameters["rotations"].detach()
+        updated_parameters["rotations"] += rotations_delta * self.learning_rate
+        return updated_parameters
 
     def run(self):
         wandb.init(project="new-dynamic-gaussians")
@@ -148,7 +147,8 @@ class Xyz(Command):
             while timestep_capture_buffer:
                 with torch.no_grad():
                     capture = get_random_element(
-                        input_list=timestep_capture_buffer, fallback_list=timestep_captures
+                        input_list=timestep_capture_buffer,
+                        fallback_list=timestep_captures,
                     )
                     loss = self.get_loss(updated_parameters, capture)
                     losses.append(loss.item())
