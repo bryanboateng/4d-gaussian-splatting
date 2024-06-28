@@ -1,5 +1,6 @@
 import copy
 import os
+from random import randint
 
 import numpy as np
 import torch
@@ -80,3 +81,9 @@ def load_timestep_captures(
             )
         )
     return timestep_data
+
+
+def get_random_element(input_list, fallback_list):
+    if not input_list:
+        input_list = fallback_list.copy()
+    return input_list.pop(randint(0, len(input_list) - 1))

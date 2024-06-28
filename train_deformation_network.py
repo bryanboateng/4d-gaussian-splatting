@@ -14,7 +14,7 @@ import wandb
 from command import Command
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera
-from train_commons import load_timestep_captures
+from train_commons import load_timestep_captures, get_random_element
 
 
 def get_batch(todo_dataset, dataset):
@@ -119,10 +119,12 @@ class Xyz(Command):
             timestep_captures = load_timestep_captures(
                 dataset_metadata, timestep, self.data_directory_path, self.sequence_name
             )
-            dataset_queue = []
+            timestep_capture_buffer = []
 
-            for i in tqdm(range(10_000)):
-                X = get_batch(dataset_queue, timestep_captures)
+            for _ in tqdm(range(10_000)):
+                capture = get_random_element(
+                    input_list=timestep_capture_buffer, fallback_list=timestep_captures
+                )
 
                 delta = deformation_network(
                     torch.cat((parameters["means"], parameters["rotations"]), dim=1),
@@ -138,7 +140,7 @@ class Xyz(Command):
                 updated_params["rotations"] = updated_params["rotations"].detach()
                 updated_params["rotations"] += delta_rotations * l
 
-                loss = get_loss(updated_params, X)
+                loss = get_loss(updated_params, capture)
 
                 wandb.log(
                     {
@@ -151,13 +153,13 @@ class Xyz(Command):
                 optimizer.step()
                 optimizer.zero_grad()
 
-            dataset_queue = timestep_captures.copy()
+            timestep_capture_buffer = timestep_captures.copy()
             losses = []
-            while dataset_queue:
+            while timestep_capture_buffer:
                 with torch.no_grad():
-                    X = get_batch(dataset_queue, timestep_captures)
+                    capture = get_batch(timestep_capture_buffer, timestep_captures)
 
-                    loss = get_loss(updated_params, X)
+                    loss = get_loss(updated_params, capture)
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
@@ -175,7 +177,7 @@ class Xyz(Command):
         for i in tqdm(range(10_000)):
             di = torch.randint(0, len(timestep_captures), (1,))
             si = torch.randint(0, len(timestep_captures[0]), (1,))
-            X = timestep_captures[di][si]
+            capture = timestep_captures[di][si]
 
             delta = deformation_network(
                 torch.cat((parameters["means"], parameters["rotations"]), dim=1),
@@ -191,7 +193,7 @@ class Xyz(Command):
             updated_params["rotations"] = updated_params["rotations"].detach()
             updated_params["rotations"] += delta_rotations * l
 
-            loss = get_loss(updated_params, X)
+            loss = get_loss(updated_params, capture)
 
             wandb.log(
                 {
@@ -206,8 +208,8 @@ class Xyz(Command):
         for d in timestep_captures:
             losses = []
             with torch.no_grad():
-                for X in d:
-                    loss = get_loss(updated_params, X)
+                for capture in d:
+                    loss = get_loss(updated_params, capture)
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses-new": sum(losses) / len(losses)})

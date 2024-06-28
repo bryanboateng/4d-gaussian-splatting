@@ -1,14 +1,11 @@
-import copy
 import json
 import os
 from dataclasses import dataclass, MISSING
 from datetime import datetime
-from random import randint
 
 import numpy as np
 import open3d as o3d
 import torch
-from PIL import Image
 from tqdm import tqdm
 
 import external
@@ -20,11 +17,10 @@ from helpers import (
     weighted_l2_loss_v1,
     weighted_l2_loss_v2,
     quat_mult,
-    Camera,
     GaussianCloudParameterNames,
     Variables,
 )
-from train_commons import Capture, load_timestep_captures
+from train_commons import Capture, load_timestep_captures, get_random_element
 
 
 @dataclass
@@ -567,10 +563,8 @@ class Trainer(Command):
             iteration_range = range(10000 if is_initial_timestep else 2000)
             progress_bar = tqdm(iteration_range, desc=f"timestep {timestep}")
             for i in iteration_range:
-                if not timestep_capture_buffer:
-                    timestep_capture_buffer = timestep_captures.copy()
-                capture = timestep_capture_buffer.pop(
-                    randint(0, len(timestep_capture_buffer) - 1)
+                capture = get_random_element(
+                    input_list=timestep_capture_buffer, fallback_list=timestep_captures
                 )
                 loss = self._calculate_loss(
                     gaussian_cloud_parameters=gaussian_cloud_parameters,
