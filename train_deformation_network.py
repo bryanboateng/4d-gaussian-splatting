@@ -95,6 +95,24 @@ class Xyz(Command):
             parameter.requires_grad = False
         return parameters
 
+    @staticmethod
+    def _update_parameters(
+        deformation_network: DeformationNetwork, parameters, timestep
+    ):
+        delta = deformation_network(
+            torch.cat((parameters["means"], parameters["rotations"]), dim=1),
+            torch.tensor(timestep).cuda(),
+        )
+        means_delta = delta[:, :3]
+        rotations_delta = delta[:, 3:]
+        learning_rate = 0.01
+        updated_parameters = copy.deepcopy(parameters)
+        updated_parameters["means"] = updated_parameters["means"].detach()
+        updated_parameters["means"] += means_delta * learning_rate
+        updated_parameters["rotations"] = updated_parameters["rotations"].detach()
+        updated_parameters["rotations"] += rotations_delta * learning_rate
+        return updated_parameters
+
     def _set_absolute_paths(self):
         self.data_directory_path = os.path.abspath(self.data_directory_path)
 
@@ -126,21 +144,11 @@ class Xyz(Command):
                     input_list=timestep_capture_buffer, fallback_list=timestep_captures
                 )
 
-                delta = deformation_network(
-                    torch.cat((parameters["means"], parameters["rotations"]), dim=1),
-                    torch.tensor(timestep).cuda(),
+                updated_parameters = self._update_parameters(
+                    deformation_network, parameters, timestep
                 )
-                delta_means = delta[:, :3]
-                delta_rotations = delta[:, 3:]
 
-                l = 0.01
-                updated_params = copy.deepcopy(parameters)
-                updated_params["means"] = updated_params["means"].detach()
-                updated_params["means"] += delta_means * l
-                updated_params["rotations"] = updated_params["rotations"].detach()
-                updated_params["rotations"] += delta_rotations * l
-
-                loss = get_loss(updated_params, capture)
+                loss = get_loss(updated_parameters, capture)
 
                 wandb.log(
                     {
@@ -159,7 +167,7 @@ class Xyz(Command):
                 with torch.no_grad():
                     capture = get_batch(timestep_capture_buffer, timestep_captures)
 
-                    loss = get_loss(updated_params, capture)
+                    loss = get_loss(updated_parameters, capture)
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
@@ -179,21 +187,11 @@ class Xyz(Command):
             si = torch.randint(0, len(timestep_captures[0]), (1,))
             capture = timestep_captures[di][si]
 
-            delta = deformation_network(
-                torch.cat((parameters["means"], parameters["rotations"]), dim=1),
-                torch.tensor(timestep).cuda(),
+            updated_parameters = self._update_parameters(
+                deformation_network, parameters, timestep
             )
-            delta_means = delta[:, :3]
-            delta_rotations = delta[:, 3:]
 
-            l = 0.01
-            updated_params = copy.deepcopy(parameters)
-            updated_params["means"] = updated_params["means"].detach()
-            updated_params["means"] += delta_means * l
-            updated_params["rotations"] = updated_params["rotations"].detach()
-            updated_params["rotations"] += delta_rotations * l
-
-            loss = get_loss(updated_params, capture)
+            loss = get_loss(updated_parameters, capture)
 
             wandb.log(
                 {
@@ -209,7 +207,7 @@ class Xyz(Command):
             losses = []
             with torch.no_grad():
                 for capture in d:
-                    loss = get_loss(updated_params, capture)
+                    loss = get_loss(updated_parameters, capture)
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
