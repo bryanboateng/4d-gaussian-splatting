@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 from torch import nn
@@ -9,6 +11,7 @@ from random import randint
 from tqdm import tqdm
 import wandb
 
+from command import Command
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import o3d_knn, setup_camera
 
@@ -218,10 +221,15 @@ def train(seq: str):
         wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
 
 
-def main():
-    wandb.init(project="new-dynamic-gaussians")
+@dataclass
+class Xyz(Command):
+    def run(self):
+        wandb.init(project="new-dynamic-gaussians")
+        train("basketball")
 
-    train("basketball")
+
+def main():
+    Xyz().parse_args().run()
 
 
 if __name__ == "__main__":
