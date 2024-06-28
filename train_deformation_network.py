@@ -69,59 +69,47 @@ def get_loss(params, batch):
     return loss
 
 
-def load_params(path: str):
-    params = torch.load(path)
-
-    for v in params.values():
-        v.requires_grad = False
-
-    return params
-
-
-class MLP(nn.Module):
-    def __init__(self, in_dim, seq_len) -> None:
-        super(MLP, self).__init__()
-        self.fc1 = nn.Linear(in_dim + 2, 64)
+class DeformationNetwork(nn.Module):
+    def __init__(self, input_size, sequence_length) -> None:
+        super(DeformationNetwork, self).__init__()
+        self.fc1 = nn.Linear(input_size + 2, 64)
         self.fc2 = nn.Linear(64, 128)
         self.fc3 = nn.Linear(128, 256)
         self.fc4 = nn.Linear(256, 128)
         self.fc5 = nn.Linear(128, 64)
-        self.fc6 = nn.Linear(64, in_dim)
+        self.fc6 = nn.Linear(64, input_size)
 
         self.relu = nn.ReLU()
 
-        self.emb = nn.Embedding(seq_len, 2)
+        self.embedding = nn.Embedding(sequence_length, 2)
 
-    def dec2bin(self, x, bits):
-        # mask = 2 ** torch.arange(bits).to(x.device, x.dtype)
-        mask = 2 ** torch.arange(bits - 1, -1, -1).to(x.device, x.dtype)
-        return x.unsqueeze(-1).bitwise_and(mask).ne(0).float()
+    def forward(self, input_tensor, timestep):
+        batch_size = input_tensor.shape[0]
+        initial_input_tensor = input_tensor
+        embedding_tensor = self.embedding(timestep).repeat(batch_size, 1)
+        input_with_embedding = torch.cat((input_tensor, embedding_tensor), dim=1)
 
-    def forward(self, x, t):
-        B, D = x.shape
-
-        x_ = x
-
-        e = self.emb(t).repeat(B, 1)
-        # e = self.dec2bin(t, 3).repeat(B, 1)
-
-        x = torch.cat((x, e), dim=1)
-
-        x = x  # + e
-        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc1(input_with_embedding))
         x = self.relu(self.fc2(x))
         x = self.relu(self.fc3(x))
         x = self.relu(self.fc4(x))
         x = self.relu(self.fc5(x))
         x = self.fc6(x)
 
-        return x_ + x
+        return initial_input_tensor + x
 
 
 @dataclass
 class Xyz(Command):
     data_directory_path: str = MISSING
     sequence_name: str = MISSING
+
+    @staticmethod
+    def _load_and_freeze_parameters(path: str):
+        parameters = torch.load(path)
+        for parameter in parameters.values():
+            parameter.requires_grad = False
+        return parameters
 
     def _set_absolute_paths(self):
         self.data_directory_path = os.path.abspath(self.data_directory_path)
@@ -139,10 +127,10 @@ class Xyz(Command):
             )
         )
         sequence_length = len(dataset_metadata["fn"])
-        params = load_params("params.pth")
-        mlp = MLP(7, sequence_length).cuda()
-        mlp_optimizer = torch.optim.Adam(params=mlp.parameters(), lr=1e-3)
-        ## Initial Training
+        parameters = self._load_and_freeze_parameters("params.pth")
+        deformation_network = DeformationNetwork(7, sequence_length).cuda()
+        optimizer = torch.optim.Adam(params=deformation_network.parameters(), lr=1e-3)
+
         for t in range(0, sequence_length, 1):
             dataset = get_dataset(t, dataset_metadata, self.sequence_name)
             dataset_queue = []
@@ -150,15 +138,15 @@ class Xyz(Command):
             for i in tqdm(range(10_000)):
                 X = get_batch(dataset_queue, dataset)
 
-                delta = mlp(
-                    torch.cat((params["means"], params["rotations"]), dim=1),
+                delta = deformation_network(
+                    torch.cat((parameters["means"], parameters["rotations"]), dim=1),
                     torch.tensor(t).cuda(),
                 )
                 delta_means = delta[:, :3]
                 delta_rotations = delta[:, 3:]
 
                 l = 0.01
-                updated_params = copy.deepcopy(params)
+                updated_params = copy.deepcopy(parameters)
                 updated_params["means"] = updated_params["means"].detach()
                 updated_params["means"] += delta_means * l
                 updated_params["rotations"] = updated_params["rotations"].detach()
@@ -174,8 +162,8 @@ class Xyz(Command):
 
                 loss.backward()
 
-                mlp_optimizer.step()
-                mlp_optimizer.zero_grad()
+                optimizer.step()
+                optimizer.zero_grad()
 
             dataset_queue = dataset.copy()
             losses = []
@@ -196,15 +184,15 @@ class Xyz(Command):
             si = torch.randint(0, len(dataset[0]), (1,))
             X = dataset[di][si]
 
-            delta = mlp(
-                torch.cat((params["means"], params["rotations"]), dim=1),
+            delta = deformation_network(
+                torch.cat((parameters["means"], parameters["rotations"]), dim=1),
                 torch.tensor(t).cuda(),
             )
             delta_means = delta[:, :3]
             delta_rotations = delta[:, 3:]
 
             l = 0.01
-            updated_params = copy.deepcopy(params)
+            updated_params = copy.deepcopy(parameters)
             updated_params["means"] = updated_params["means"].detach()
             updated_params["means"] += delta_means * l
             updated_params["rotations"] = updated_params["rotations"].detach()
@@ -220,8 +208,8 @@ class Xyz(Command):
 
             loss.backward()
 
-            mlp_optimizer.step()
-            mlp_optimizer.zero_grad()
+            optimizer.step()
+            optimizer.zero_grad()
         for d in dataset:
             losses = []
             with torch.no_grad():
