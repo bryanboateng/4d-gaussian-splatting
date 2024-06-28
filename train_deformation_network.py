@@ -166,12 +166,12 @@ class Xyz(Command):
                 )
             ]
         for _ in tqdm(range(10_000)):
-            di = torch.randint(0, len(timestep_captures), (1,))
-            si = torch.randint(0, len(timestep_captures[0]), (1,))
-            capture = timestep_captures[di][si]
+            random_timestep = torch.randint(0, len(timestep_captures), (1,))
+            random_camera_index = torch.randint(0, len(timestep_captures[0]), (1,))
+            capture = timestep_captures[random_timestep][random_camera_index]
 
             updated_parameters = self._update_parameters(
-                deformation_network, parameters, di
+                deformation_network, parameters, random_timestep
             )
             loss = self.get_loss(updated_parameters, capture)
             wandb.log(
