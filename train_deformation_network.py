@@ -138,12 +138,12 @@ class Xyz(Command):
                 "r",
             )
         )
-        seq_len = 20  # len(md['fn'])
+        sequence_length = len(dataset_metadata["fn"])
         params = load_params("params.pth")
-        mlp = MLP(7, seq_len).cuda()
+        mlp = MLP(7, sequence_length).cuda()
         mlp_optimizer = torch.optim.Adam(params=mlp.parameters(), lr=1e-3)
         ## Initial Training
-        for t in range(0, seq_len, 1):
+        for t in range(0, sequence_length, 1):
             dataset = get_dataset(t, dataset_metadata, self.sequence_name)
             dataset_queue = []
 
@@ -189,7 +189,7 @@ class Xyz(Command):
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
         ## Random Training
         dataset = []
-        for t in range(20):
+        for t in range(sequence_length):
             dataset += [get_dataset(t, dataset_metadata, self.sequence_name)]
         for i in tqdm(range(10_000)):
             di = torch.randint(0, len(dataset), (1,))
