@@ -1,3 +1,4 @@
+import argparse
 import numpy as np
 import torch
 from torch import nn
@@ -8,220 +9,203 @@ from PIL import Image
 from random import randint
 from tqdm import tqdm
 import wandb
-
+import os
+from datetime import datetime
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from helpers import o3d_knn, setup_camera
-
-from torch.optim.lr_scheduler import LambdaLR
+from helpers import setup_camera, create_gaussian_cloud, get_random_element, load_timestep_captures
 
 
-def get_dataset(t, md, seq):
-    dataset = []
-    for c in range(len(md["fn"][t])):
-        w, h, k, w2c = md["w"], md["h"], md["k"][t][c], md["w2c"][t][c]
-        cam = setup_camera(w, h, k, w2c, near=1.0, far=100)
-        fn = md["fn"][t][c]
-        im = np.array(copy.deepcopy(Image.open(f"./data/{seq}/ims/{fn}")))
-        im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
-        seg = np.array(
-            copy.deepcopy(Image.open(f"./data/{seq}/seg/{fn.replace('.jpg', '.png')}"))
-        ).astype(np.float32)
-        seg = torch.tensor(seg).float().cuda()
-        seg_col = torch.stack((seg, torch.zeros_like(seg), 1 - seg))
-        dataset.append({"cam": cam, "im": im, "seg": seg_col, "id": c})
-    return dataset
+class Configuration:
+    def __init__(self):
+        self.data_directory_path = "./data/"
+        self.output_directory_path = "./output/"
+        self.sequence_name = "basketball"
+        self.experiment_id = datetime.utcnow().isoformat() + "Z"
+
+    def set_absolute_paths(self):
+        self.data_directory_path = os.path.abspath(self.data_directory_path)
+        self.output_directory_path = os.path.abspath(self.output_directory_path)
+
+    def update_from_arguments(self, args):
+        for key, value in vars(args).items():
+            if value is not None and hasattr(self, key):
+                setattr(self, key, value)
+        self.set_absolute_paths()
+
+    def update_from_json(self, json_path):
+        with open(json_path, "r") as file:
+            data = json.load(file)
+            for key, value in data.items():
+                if hasattr(self, key):
+                    setattr(self, key, value)
+        self.set_absolute_paths()
 
 
-def get_batch(todo_dataset, dataset):
-    if not todo_dataset:
-        todo_dataset = dataset.copy()
-    curr_data = todo_dataset.pop(randint(0, len(todo_dataset) - 1))
-    return curr_data
+def parse_arguments(configuration: Configuration):
+    argument_parser = argparse.ArgumentParser(description="???")
+    argument_parser.add_argument(
+        "--config_file", type=str, help="Path to the JSON config file"
+    )
+
+    for key, value in vars(configuration).items():
+        t = type(value)
+        if t == bool:
+            argument_parser.add_argument(f"--{key}", default=value, action="store_true")
+        else:
+            argument_parser.add_argument(f"--{key}", default=value, type=t)
+
+    return argument_parser.parse_args()
 
 
-def params2rendervar(params):
-    rendervar = {
-        "means3D": params["means"],
-        "colors_precomp": params["colors"],
-        "rotations": torch.nn.functional.normalize(params["rotations"]),
-        "opacities": torch.sigmoid(params["opacities"]),
-        "scales": torch.exp(params["scales"]),
-        "means2D": torch.zeros_like(params["means"], requires_grad=True, device="cuda")
-        + 0,
-    }
-    return rendervar
-
-
-def get_loss(params, batch):
-    rendervar = params2rendervar(params)
-    # rendervar['means2D'].retain_grad()
+def calculate_loss(gaussian_cloud_parameters: dict[str, torch.nn.Parameter], batch):
+    gaussian_cloud = create_gaussian_cloud(gaussian_cloud_parameters)
+    # gaussian_cloud['means2D'].retain_grad()
 
     (
-        im,
+        rendered_image,
         _,
         _,
     ) = Renderer(
         raster_settings=batch["cam"]
-    )(**rendervar)
-    loss = torch.nn.functional.l1_loss(im, batch["im"])
-
-    return loss
+    )(**gaussian_cloud)
+    return torch.nn.functional.l1_loss(rendered_image, batch["im"])
 
 
-def load_params(path: str):
-    params = torch.load(path)
-
-    for v in params.values():
-        v.requires_grad = False
-
-    return params
+def load_and_freeze_parameters(path: str):
+    parameters = torch.load(path)
+    for parameter in parameters.values():
+        parameter.requires_grad = False
+    return parameters
 
 
 class MLP(nn.Module):
-    def __init__(self, in_dim, seq_len) -> None:
+    def __init__(self, input_size, embedding_size):
         super(MLP, self).__init__()
-        self.fc1 = nn.Linear(in_dim + 2, 64)
+        self.fc1 = nn.Linear(input_size + 2, 64)
         self.fc2 = nn.Linear(64, 128)
         self.fc3 = nn.Linear(128, 256)
         self.fc4 = nn.Linear(256, 128)
         self.fc5 = nn.Linear(128, 64)
-        self.fc6 = nn.Linear(64, in_dim)
+        self.fc6 = nn.Linear(64, input_size)
 
         self.relu = nn.ReLU()
 
-        self.emb = nn.Embedding(seq_len, 2)
+        self.embedding = nn.Embedding(embedding_size, 2)
 
-    def dec2bin(self, x, bits):
-        # mask = 2 ** torch.arange(bits).to(x.device, x.dtype)
-        mask = 2 ** torch.arange(bits - 1, -1, -1).to(x.device, x.dtype)
-        return x.unsqueeze(-1).bitwise_and(mask).ne(0).float()
+    def forward(self, input_tensor, timestep):
+        batch_size = input_tensor.shape[0]
+        initial_input_tensor = input_tensor
+        embedding_tensor = self.embedding(timestep).repeat(batch_size, 1)
+        input_with_embedding = torch.cat((input_tensor, embedding_tensor), dim=1)
 
-    def forward(self, x, t):
-        B, D = x.shape
-
-        x_ = x
-
-        e = self.emb(t).repeat(B, 1)
-        # e = self.dec2bin(t, 3).repeat(B, 1)
-
-        x = torch.cat((x, e), dim=1)
-
-        x = x  # + e
-        x = self.relu(self.fc1(x))
+        x = self.relu(self.fc1(input_with_embedding))
         x = self.relu(self.fc2(x))
         x = self.relu(self.fc3(x))
         x = self.relu(self.fc4(x))
         x = self.relu(self.fc5(x))
         x = self.fc6(x)
 
-        return x_ + x
+        return initial_input_tensor + x
 
 
-def train(seq: str):
-    md = json.load(open(f"./data/{seq}/train_meta.json", "r"))
-    seq_len = 20  # len(md['fn'])
-    params = load_params("params.pth")
+def train():
+    dataset_metadata = json.load(
+        open(
+            os.path.join(
+                config.data_directory_path, config.sequence_name, "train_meta.json"
+            ),
+            "r",
+        )
+    )
+    sequence_length = 20  # len(dataset_metadata["fn"])
+    parameters = load_and_freeze_parameters("params.pth")
 
-    mlp = MLP(7, seq_len).cuda()
-    mlp_optimizer = torch.optim.Adam(params=mlp.parameters(), lr=1e-3)
+    mlp = MLP(7, sequence_length).cuda()
+    optimizer = torch.optim.Adam(params=mlp.parameters(), lr=1e-3)
 
-    ## Initial Training
+    for timestep in range(sequence_length):
+        dataset = load_timestep_captures(timestep, dataset_metadata)
+        timestep_capture_buffer = []
 
-    for t in range(0, seq_len, 1):
-        dataset = get_dataset(t, md, seq)
-        dataset_queue = []
-
-        for i in tqdm(range(10_000)):
-            X = get_batch(dataset_queue, dataset)
-
-            delta = mlp(
-                torch.cat((params["means"], params["rotations"]), dim=1),
-                torch.tensor(t).cuda(),
-            )
-            delta_means = delta[:, :3]
-            delta_rotations = delta[:, 3:]
-
-            l = 0.01
-            updated_params = copy.deepcopy(params)
-            updated_params["means"] = updated_params["means"].detach()
-            updated_params["means"] += delta_means * l
-            updated_params["rotations"] = updated_params["rotations"].detach()
-            updated_params["rotations"] += delta_rotations * l
-
-            loss = get_loss(updated_params, X)
-
+        for _ in tqdm(range(10_000)):
+            capture = get_random_element(input_list=timestep_capture_buffer, fallback_list=dataset)
+            updated_parameters = update_parameters(mlp, parameters, timestep)
+            loss = calculate_loss(updated_parameters, capture)
             wandb.log(
                 {
-                    f"loss-{t}": loss.item(),
+                    f"loss-{timestep}": loss.item(),
                 }
             )
-
             loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
 
-            mlp_optimizer.step()
-            mlp_optimizer.zero_grad()
-
-        dataset_queue = dataset.copy()
+        timestep_capture_buffer = dataset.copy()
         losses = []
-        while dataset_queue:
+        while timestep_capture_buffer:
             with torch.no_grad():
-                X = get_batch(dataset_queue, dataset)
-
-                loss = get_loss(updated_params, X)
+                capture = get_random_element(input_list=timestep_capture_buffer, fallback_list=dataset)
+                loss = calculate_loss(updated_parameters, capture)
                 losses.append(loss.item())
 
         wandb.log({f"mean-losses": sum(losses) / len(losses)})
 
-    ## Random Training
-    dataset = []
-    for t in range(20):
-        dataset += [get_dataset(t, md, seq)]
-    for i in tqdm(range(10_000)):
-        di = torch.randint(0, len(dataset), (1,))
-        si = torch.randint(0, len(dataset[0]), (1,))
-        X = dataset[di][si]
+    # Random Training
+    datasets = []
+    for timestep in range(sequence_length):
+        datasets.append(load_timestep_captures(timestep, dataset_metadata))
+    for _ in tqdm(range(10_000)):
+        di = torch.randint(0, len(datasets), (1,))
+        si = torch.randint(0, len(datasets[0]), (1,))
+        X = datasets[di][si]
 
-        delta = mlp(
-            torch.cat((params["means"], params["rotations"]), dim=1),
-            torch.tensor(t).cuda(),
-        )
-        delta_means = delta[:, :3]
-        delta_rotations = delta[:, 3:]
+        updated_parameters = update_parameters(mlp, parameters, di)
 
-        l = 0.01
-        updated_params = copy.deepcopy(params)
-        updated_params["means"] = updated_params["means"].detach()
-        updated_params["means"] += delta_means * l
-        updated_params["rotations"] = updated_params["rotations"].detach()
-        updated_params["rotations"] += delta_rotations * l
-
-        loss = get_loss(updated_params, X)
+        loss = calculate_loss(updated_parameters, X)
 
         wandb.log(
             {
                 f"loss-new": loss.item(),
             }
         )
-
         loss.backward()
+        optimizer.step()
+        optimizer.zero_grad()
 
-        mlp_optimizer.step()
-        mlp_optimizer.zero_grad()
-
-    for d in dataset:
+    for dataset in datasets:
         losses = []
         with torch.no_grad():
-            for X in d:
-                loss = get_loss(updated_params, X)
+            for X in dataset:
+                loss = calculate_loss(updated_parameters, X)
                 losses.append(loss.item())
 
         wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
 
 
-def main():
-    wandb.init(project="new-dynamic-gaussians")
-    train("basketball")
+def update_parameters(mlp: MLP, parameters, timestep):
+    delta = mlp(
+        torch.cat((parameters["means"], parameters["rotations"]), dim=1),
+        torch.tensor(timestep).cuda(),
+    )
+    means_delta = delta[:, :3]
+    rotations_delta = delta[:, 3:]
+    learning_rate = 0.01
+    updated_parameters = copy.deepcopy(parameters)
+    updated_parameters["means"] = updated_parameters["means"].detach()
+    updated_parameters["means"] += means_delta * learning_rate
+    updated_parameters["rotations"] = updated_parameters["rotations"].detach()
+    updated_parameters["rotations"] += rotations_delta * learning_rate
+    return updated_parameters
 
 
 if __name__ == "__main__":
-    main()
+    config = Configuration()
+    arguments = parse_arguments(config)
+
+    if arguments.config_file:
+        config.update_from_json(arguments.config_json)
+    else:
+        config.update_from_arguments(arguments)
+
+    wandb.init(project="new-dynamic-gaussians")
+    train()

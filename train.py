@@ -3,7 +3,6 @@ import copy
 import json
 import os
 from datetime import datetime
-from random import randint
 
 import numpy as np
 import open3d as o3d
@@ -14,6 +13,8 @@ from tqdm import tqdm
 import external
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import (
+    create_gaussian_cloud,
+    get_random_element,
     l1_loss_v1,
     l1_loss_v2,
     weighted_l2_loss_v1,
@@ -65,26 +66,6 @@ def parse_arguments(configuration: Configuration):
             argument_parser.add_argument(f"--{key}", default=value, type=t)
 
     return argument_parser.parse_args()
-
-
-def create_gaussian_cloud(parameters: dict[str, torch.nn.Parameter]):
-    return {
-        "means3D": parameters[GaussianCloudParameterNames.means],
-        "colors_precomp": parameters[GaussianCloudParameterNames.colors],
-        "rotations": torch.nn.functional.normalize(
-            parameters[GaussianCloudParameterNames.rotation_quaternions]
-        ),
-        "opacities": torch.sigmoid(
-            parameters[GaussianCloudParameterNames.opacities_logits]
-        ),
-        "scales": torch.exp(parameters[GaussianCloudParameterNames.log_scales]),
-        "means2D": torch.zeros_like(
-            parameters[GaussianCloudParameterNames.means],
-            requires_grad=True,
-            device="cuda",
-        )
-        + 0,
-    }
 
 
 def convert_parameters_to_numpy(
@@ -153,68 +134,6 @@ def compute_knn_indices_and_squared_distances(numpy_point_cloud: np.ndarray, k: 
         squared_distances_list.append(squared_distances_to_neighbors[1:])
     return np.array(indices_list), np.array(squared_distances_list)
 
-
-def load_timestep_captures(timestamp: int, dataset_metadata):
-    timestep_data = []
-    for camera_index in range(len(dataset_metadata["fn"][timestamp])):
-        filename = dataset_metadata["fn"][timestamp][camera_index]
-        segmentation_mask = (
-            torch.tensor(
-                np.array(
-                    copy.deepcopy(
-                        Image.open(
-                            os.path.join(
-                                config.data_directory_path,
-                                config.sequence_name,
-                                "seg",
-                                filename.replace(".jpg", ".png"),
-                            )
-                        )
-                    )
-                ).astype(np.float32)
-            )
-            .float()
-            .cuda()
-        )
-        timestep_data.append(
-            Capture(
-                camera=Camera(
-                    id_=camera_index,
-                    image_width=dataset_metadata["w"],
-                    image_height=dataset_metadata["h"],
-                    near_clipping_plane_distance=1,
-                    far_clipping_plane_distance=100,
-                    intrinsic_matrix=dataset_metadata["k"][timestamp][camera_index],
-                    extrinsic_matrix=dataset_metadata["w2c"][timestamp][camera_index],
-                ),
-                image=torch.tensor(
-                    np.array(
-                        copy.deepcopy(
-                            Image.open(
-                                os.path.join(
-                                    config.data_directory_path,
-                                    config.sequence_name,
-                                    "ims",
-                                    filename,
-                                )
-                            )
-                        )
-                    )
-                )
-                .float()
-                .cuda()
-                .permute(2, 0, 1)
-                / 255,
-                segmentation_mask=torch.stack(
-                    (
-                        segmentation_mask,
-                        torch.zeros_like(segmentation_mask),
-                        1 - segmentation_mask,
-                    )
-                ),
-            )
-        )
-    return timestep_data
 
 
 def initialize_parameters_and_variables(metadata):
@@ -641,11 +560,7 @@ def train():
         iteration_range = range(10000 if is_initial_timestep else 2000)
         progress_bar = tqdm(iteration_range, desc=f"timestep {timestep}")
         for i in iteration_range:
-            if not timestep_capture_buffer:
-                timestep_capture_buffer = timestep_captures.copy()
-            capture = timestep_capture_buffer.pop(
-                randint(0, len(timestep_capture_buffer) - 1)
-            )
+            capture = get_random_element(input_list=timestep_capture_buffer, fallback_list=timestep_captures)
             loss = calculate_loss(
                 gaussian_cloud_parameters=gaussian_cloud_parameters,
                 target_capture=capture,
@@ -681,6 +596,8 @@ def train():
             )
         if not is_initial_timestep:
             save_sequence(gaussian_cloud_parameters_sequence)
+
+
 
 
 if __name__ == "__main__":
