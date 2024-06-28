@@ -1,7 +1,7 @@
-import argparse
 import copy
 import json
 import os
+from dataclasses import dataclass, MISSING
 from datetime import datetime
 from random import randint
 
@@ -12,6 +12,7 @@ from PIL import Image
 from tqdm import tqdm
 
 import external
+from command import Command
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import (
     l1_loss_v1,
@@ -25,32 +26,6 @@ from helpers import (
 )
 
 
-class Configuration:
-    def __init__(self):
-        self.data_directory_path = "./data/"
-        self.output_directory_path = "./output/"
-        self.sequence_name = "basketball"
-        self.experiment_id = datetime.utcnow().isoformat() + "Z"
-
-    def set_absolute_paths(self):
-        self.data_directory_path = os.path.abspath(self.data_directory_path)
-        self.output_directory_path = os.path.abspath(self.output_directory_path)
-
-    def update_from_arguments(self, args):
-        for key, value in vars(args).items():
-            if value is not None and hasattr(self, key):
-                setattr(self, key, value)
-        self.set_absolute_paths()
-
-    def update_from_json(self, json_path):
-        with open(json_path, "r") as file:
-            data = json.load(file)
-            for key, value in data.items():
-                if hasattr(self, key):
-                    setattr(self, key, value)
-        self.set_absolute_paths()
-
-
 class Capture:
     def __init__(
         self, camera: Camera, image: torch.Tensor, segmentation_mask: torch.Tensor
@@ -60,9 +35,12 @@ class Capture:
         self.segmentation_mask = segmentation_mask
 
 
-class Trainer:
-    def __init__(self, config: Configuration):
-        self.config = config
+@dataclass
+class Trainer(Command):
+    data_directory_path: str = MISSING
+    sequence_name: str = MISSING
+    output_directory_path: str = "./output/"
+    experiment_id: str = datetime.utcnow().isoformat() + "Z"
 
     @staticmethod
     def _compute_knn_indices_and_squared_distances(
@@ -472,8 +450,8 @@ class Trainer:
     def _initialize_parameters_and_variables(self, metadata):
         initial_point_cloud = np.load(
             os.path.join(
-                self.config.data_directory_path,
-                self.config.sequence_name,
+                self.data_directory_path,
+                self.sequence_name,
                 "init_pt_cld.npz",
             )
         )["data"]
@@ -550,8 +528,8 @@ class Trainer:
                         copy.deepcopy(
                             Image.open(
                                 os.path.join(
-                                    self.config.data_directory_path,
-                                    self.config.sequence_name,
+                                    self.data_directory_path,
+                                    self.sequence_name,
                                     "seg",
                                     filename.replace(".jpg", ".png"),
                                 )
@@ -580,8 +558,8 @@ class Trainer:
                             copy.deepcopy(
                                 Image.open(
                                     os.path.join(
-                                        self.config.data_directory_path,
-                                        self.config.sequence_name,
+                                        self.data_directory_path,
+                                        self.sequence_name,
                                         "ims",
                                         filename,
                                     )
@@ -615,22 +593,22 @@ class Trainer:
                 to_save[k] = gaussian_cloud_parameters_sequence[0][k]
 
         parameters_save_path = os.path.join(
-            self.config.output_directory_path,
-            self.config.experiment_id,
-            self.config.sequence_name,
+            self.output_directory_path,
+            self.experiment_id,
+            self.sequence_name,
             "params.npz",
         )
         os.makedirs(os.path.dirname(parameters_save_path), exist_ok=True)
         print(f"Saving parameters at path: {parameters_save_path}")
         np.savez(parameters_save_path, **to_save)
 
-    def train(self):
+    def run(self):
         torch.cuda.empty_cache()
         dataset_metadata = json.load(
             open(
                 os.path.join(
-                    self.config.data_directory_path,
-                    self.config.sequence_name,
+                    self.data_directory_path,
+                    self.sequence_name,
                     "train_meta.json",
                 ),
                 "r",
@@ -696,32 +674,8 @@ class Trainer:
                 self.save_sequence(gaussian_cloud_parameters_sequence)
 
 
-def parse_arguments(configuration: Configuration):
-    argument_parser = argparse.ArgumentParser(description="???")
-    argument_parser.add_argument(
-        "--config_file", type=str, help="Path to the JSON config file"
-    )
-
-    for key, value in vars(configuration).items():
-        t = type(value)
-        if t == bool:
-            argument_parser.add_argument(f"--{key}", default=value, action="store_true")
-        else:
-            argument_parser.add_argument(f"--{key}", default=value, type=t)
-
-    return argument_parser.parse_args()
-
-
 def main():
-    config = Configuration()
-    arguments = parse_arguments(config)
-
-    if arguments.config_file:
-        config.update_from_json(arguments.config_json)
-    else:
-        config.update_from_arguments(arguments)
-
-    Trainer(config=config).train()
+    Trainer().parse_args().run()
 
 
 if __name__ == "__main__":
