@@ -131,8 +131,8 @@ class Xyz(Command):
         deformation_network = DeformationNetwork(7, sequence_length).cuda()
         optimizer = torch.optim.Adam(params=deformation_network.parameters(), lr=1e-3)
 
-        for t in range(0, sequence_length, 1):
-            dataset = get_dataset(t, dataset_metadata, self.sequence_name)
+        for timestep in range(sequence_length):
+            dataset = get_dataset(timestep, dataset_metadata, self.sequence_name)
             dataset_queue = []
 
             for i in tqdm(range(10_000)):
@@ -140,7 +140,7 @@ class Xyz(Command):
 
                 delta = deformation_network(
                     torch.cat((parameters["means"], parameters["rotations"]), dim=1),
-                    torch.tensor(t).cuda(),
+                    torch.tensor(timestep).cuda(),
                 )
                 delta_means = delta[:, :3]
                 delta_rotations = delta[:, 3:]
@@ -156,7 +156,7 @@ class Xyz(Command):
 
                 wandb.log(
                     {
-                        f"loss-{t}": loss.item(),
+                        f"loss-{timestep}": loss.item(),
                     }
                 )
 
@@ -177,8 +177,8 @@ class Xyz(Command):
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
         ## Random Training
         dataset = []
-        for t in range(sequence_length):
-            dataset += [get_dataset(t, dataset_metadata, self.sequence_name)]
+        for timestep in range(sequence_length):
+            dataset += [get_dataset(timestep, dataset_metadata, self.sequence_name)]
         for i in tqdm(range(10_000)):
             di = torch.randint(0, len(dataset), (1,))
             si = torch.randint(0, len(dataset[0]), (1,))
@@ -186,7 +186,7 @@ class Xyz(Command):
 
             delta = deformation_network(
                 torch.cat((parameters["means"], parameters["rotations"]), dim=1),
-                torch.tensor(t).cuda(),
+                torch.tensor(timestep).cuda(),
             )
             delta_means = delta[:, :3]
             delta_rotations = delta[:, 3:]
