@@ -16,7 +16,9 @@ from train_commons import load_timestep_captures, get_random_element, Capture
 class DeformationNetwork(nn.Module):
     def __init__(self, input_size, sequence_length) -> None:
         super(DeformationNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_size + 2, 64)
+        self.embedding_dimension = 2
+        self.embedding = nn.Embedding(sequence_length, self.embedding_dimension)
+        self.fc1 = nn.Linear(input_size + self.embedding_dimension, 64)
         self.fc2 = nn.Linear(64, 128)
         self.fc3 = nn.Linear(128, 256)
         self.fc4 = nn.Linear(256, 128)
@@ -24,8 +26,6 @@ class DeformationNetwork(nn.Module):
         self.fc6 = nn.Linear(64, input_size)
 
         self.relu = nn.ReLU()
-
-        self.embedding = nn.Embedding(sequence_length, 2)
 
     def forward(self, input_tensor, timestep):
         batch_size = input_tensor.shape[0]
