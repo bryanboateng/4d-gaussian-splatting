@@ -3,7 +3,6 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from torch import nn
-from torch.optim import _functional as F
 import json
 import copy
 from PIL import Image
@@ -13,9 +12,7 @@ import wandb
 
 from command import Command
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from helpers import o3d_knn, setup_camera
-
-from torch.optim.lr_scheduler import LambdaLR
+from helpers import setup_camera
 
 
 def get_dataset(t, md, seq):
@@ -120,22 +117,69 @@ class MLP(nn.Module):
         return x_ + x
 
 
-def train(seq: str):
-    md = json.load(open(f"./data/{seq}/train_meta.json", "r"))
-    seq_len = 20  # len(md['fn'])
-    params = load_params("params.pth")
+@dataclass
+class Xyz(Command):
+    def run(self):
+        wandb.init(project="new-dynamic-gaussians")
+        sequence_name = "basketball"
+        md = json.load(open(f"./data/{sequence_name}/train_meta.json", "r"))
+        seq_len = 20  # len(md['fn'])
+        params = load_params("params.pth")
+        mlp = MLP(7, seq_len).cuda()
+        mlp_optimizer = torch.optim.Adam(params=mlp.parameters(), lr=1e-3)
+        ## Initial Training
+        for t in range(0, seq_len, 1):
+            dataset = get_dataset(t, md, sequence_name)
+            dataset_queue = []
 
-    mlp = MLP(7, seq_len).cuda()
-    mlp_optimizer = torch.optim.Adam(params=mlp.parameters(), lr=1e-3)
+            for i in tqdm(range(10_000)):
+                X = get_batch(dataset_queue, dataset)
 
-    ## Initial Training
+                delta = mlp(
+                    torch.cat((params["means"], params["rotations"]), dim=1),
+                    torch.tensor(t).cuda(),
+                )
+                delta_means = delta[:, :3]
+                delta_rotations = delta[:, 3:]
 
-    for t in range(0, seq_len, 1):
-        dataset = get_dataset(t, md, seq)
-        dataset_queue = []
+                l = 0.01
+                updated_params = copy.deepcopy(params)
+                updated_params["means"] = updated_params["means"].detach()
+                updated_params["means"] += delta_means * l
+                updated_params["rotations"] = updated_params["rotations"].detach()
+                updated_params["rotations"] += delta_rotations * l
 
+                loss = get_loss(updated_params, X)
+
+                wandb.log(
+                    {
+                        f"loss-{t}": loss.item(),
+                    }
+                )
+
+                loss.backward()
+
+                mlp_optimizer.step()
+                mlp_optimizer.zero_grad()
+
+            dataset_queue = dataset.copy()
+            losses = []
+            while dataset_queue:
+                with torch.no_grad():
+                    X = get_batch(dataset_queue, dataset)
+
+                    loss = get_loss(updated_params, X)
+                    losses.append(loss.item())
+
+            wandb.log({f"mean-losses": sum(losses) / len(losses)})
+        ## Random Training
+        dataset = []
+        for t in range(20):
+            dataset += [get_dataset(t, md, sequence_name)]
         for i in tqdm(range(10_000)):
-            X = get_batch(dataset_queue, dataset)
+            di = torch.randint(0, len(dataset), (1,))
+            si = torch.randint(0, len(dataset[0]), (1,))
+            X = dataset[di][si]
 
             delta = mlp(
                 torch.cat((params["means"], params["rotations"]), dim=1),
@@ -155,7 +199,7 @@ def train(seq: str):
 
             wandb.log(
                 {
-                    f"loss-{t}": loss.item(),
+                    f"loss-new": loss.item(),
                 }
             )
 
@@ -163,69 +207,14 @@ def train(seq: str):
 
             mlp_optimizer.step()
             mlp_optimizer.zero_grad()
-
-        dataset_queue = dataset.copy()
-        losses = []
-        while dataset_queue:
+        for d in dataset:
+            losses = []
             with torch.no_grad():
-                X = get_batch(dataset_queue, dataset)
+                for X in d:
+                    loss = get_loss(updated_params, X)
+                    losses.append(loss.item())
 
-                loss = get_loss(updated_params, X)
-                losses.append(loss.item())
-
-        wandb.log({f"mean-losses": sum(losses) / len(losses)})
-
-    ## Random Training
-    dataset = []
-    for t in range(20):
-        dataset += [get_dataset(t, md, seq)]
-    for i in tqdm(range(10_000)):
-        di = torch.randint(0, len(dataset), (1,))
-        si = torch.randint(0, len(dataset[0]), (1,))
-        X = dataset[di][si]
-
-        delta = mlp(
-            torch.cat((params["means"], params["rotations"]), dim=1),
-            torch.tensor(t).cuda(),
-        )
-        delta_means = delta[:, :3]
-        delta_rotations = delta[:, 3:]
-
-        l = 0.01
-        updated_params = copy.deepcopy(params)
-        updated_params["means"] = updated_params["means"].detach()
-        updated_params["means"] += delta_means * l
-        updated_params["rotations"] = updated_params["rotations"].detach()
-        updated_params["rotations"] += delta_rotations * l
-
-        loss = get_loss(updated_params, X)
-
-        wandb.log(
-            {
-                f"loss-new": loss.item(),
-            }
-        )
-
-        loss.backward()
-
-        mlp_optimizer.step()
-        mlp_optimizer.zero_grad()
-
-    for d in dataset:
-        losses = []
-        with torch.no_grad():
-            for X in d:
-                loss = get_loss(updated_params, X)
-                losses.append(loss.item())
-
-        wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
-
-
-@dataclass
-class Xyz(Command):
-    def run(self):
-        wandb.init(project="new-dynamic-gaussians")
-        train("basketball")
+            wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
 
 
 def main():
