@@ -145,15 +145,12 @@ class Xyz(Command):
                     deformation_network, parameters, timestep
                 )
                 loss = self.get_loss(updated_parameters, capture)
-
                 wandb.log(
                     {
                         f"loss-{timestep}": loss.item(),
                     }
                 )
-
                 loss.backward()
-
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -161,8 +158,9 @@ class Xyz(Command):
             losses = []
             while timestep_capture_buffer:
                 with torch.no_grad():
-                    capture = get_batch(timestep_capture_buffer, timestep_captures)
-
+                    capture = get_random_element(
+                        input_list=timestep_capture_buffer, fallback_list=timestep_captures
+                    )
                     loss = self.get_loss(updated_parameters, capture)
                     losses.append(loss.item())
 
