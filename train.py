@@ -447,6 +447,10 @@ class Trainer(Command):
             if parameter_group["name"] in parameters_to_fix:
                 parameter_group["lr"] = 0.0
 
+    def _set_absolute_paths(self):
+        self.data_directory_path = os.path.abspath(self.data_directory_path)
+        self.output_directory_path = os.path.abspath(self.output_directory_path)
+
     def _initialize_parameters_and_variables(self, metadata):
         initial_point_cloud = np.load(
             os.path.join(
@@ -603,6 +607,7 @@ class Trainer(Command):
         np.savez(parameters_save_path, **to_save)
 
     def run(self):
+        self._set_absolute_paths()
         torch.cuda.empty_cache()
         dataset_metadata = json.load(
             open(
