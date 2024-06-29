@@ -103,23 +103,14 @@ class Xyz(Command):
         updated_parameters["rotations"] += rotations_delta * self.learning_rate
         return updated_parameters
 
-    def run(self):
-        wandb.init(project="new-dynamic-gaussians")
-        dataset_metadata = json.load(
-            open(
-                os.path.join(
-                    self.data_directory_path,
-                    self.sequence_name,
-                    "train_meta.json",
-                ),
-                "r",
-            )
-        )
-        sequence_length = len(dataset_metadata["fn"])
-        parameters = self._load_and_freeze_parameters("params.pth")
-        deformation_network = DeformationNetwork(7, sequence_length).cuda()
-        optimizer = torch.optim.Adam(params=deformation_network.parameters(), lr=1e-3)
-
+    def _train_in_sequential_order(
+        self,
+        sequence_length,
+        dataset_metadata,
+        deformation_network,
+        parameters,
+        optimizer,
+    ):
         for timestep in range(sequence_length):
             timestep_capture_list = load_timestep_captures(
                 dataset_metadata, timestep, self.data_directory_path, self.sequence_name
@@ -128,7 +119,8 @@ class Xyz(Command):
 
             for _ in tqdm(range(10_000)):
                 capture = get_random_element(
-                    input_list=timestep_capture_buffer, fallback_list=timestep_capture_list
+                    input_list=timestep_capture_buffer,
+                    fallback_list=timestep_capture_list,
                 )
                 updated_parameters = self._update_parameters(
                     deformation_network, parameters, timestep
@@ -154,6 +146,14 @@ class Xyz(Command):
                     losses.append(loss.item())
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
 
+    def _train_in_random_order(
+        self,
+        sequence_length,
+        dataset_metadata,
+        deformation_network,
+        parameters,
+        optimizer,
+    ):
         list_of_timestep_capture_lists = []
         for timestep in range(sequence_length):
             list_of_timestep_capture_lists += [
@@ -165,9 +165,15 @@ class Xyz(Command):
                 )
             ]
         for _ in tqdm(range(10_000)):
-            random_timestep = torch.randint(0, len(list_of_timestep_capture_lists), (1,))
-            random_camera_index = torch.randint(0, len(list_of_timestep_capture_lists[0]), (1,))
-            capture = list_of_timestep_capture_lists[random_timestep][random_camera_index]
+            random_timestep = torch.randint(
+                0, len(list_of_timestep_capture_lists), (1,)
+            )
+            random_camera_index = torch.randint(
+                0, len(list_of_timestep_capture_lists[0]), (1,)
+            )
+            capture = list_of_timestep_capture_lists[random_timestep][
+                random_camera_index
+            ]
 
             updated_parameters = self._update_parameters(
                 deformation_network, parameters, random_timestep
@@ -189,6 +195,39 @@ class Xyz(Command):
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
+
+    def run(self):
+        wandb.init(project="new-dynamic-gaussians")
+        dataset_metadata = json.load(
+            open(
+                os.path.join(
+                    self.data_directory_path,
+                    self.sequence_name,
+                    "train_meta.json",
+                ),
+                "r",
+            )
+        )
+        sequence_length = len(dataset_metadata["fn"])
+        parameters = self._load_and_freeze_parameters("params.pth")
+        deformation_network = DeformationNetwork(7, sequence_length).cuda()
+        optimizer = torch.optim.Adam(params=deformation_network.parameters(), lr=1e-3)
+
+        self._train_in_sequential_order(
+            sequence_length,
+            dataset_metadata,
+            deformation_network,
+            parameters,
+            optimizer,
+        )
+
+        self._train_in_random_order(
+            sequence_length,
+            dataset_metadata,
+            deformation_network,
+            parameters,
+            optimizer,
+        )
 
 
 def main():
