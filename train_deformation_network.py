@@ -49,6 +49,7 @@ class Xyz(Command):
     data_directory_path: str = MISSING
     sequence_name: str = MISSING
     learning_rate = 0.01
+    checkpoint_path = "deformation_network_checkpoint.pth"
 
     @staticmethod
     def _load_and_freeze_parameters(path: str):
@@ -103,6 +104,10 @@ class Xyz(Command):
         updated_parameters["rotations"] += rotations_delta * self.learning_rate
         return updated_parameters
 
+    def _save_and_log_checkpoint(self, deformation_network):
+        torch.save(deformation_network.state_dict(), self.checkpoint_path)
+        wandb.save(self.checkpoint_path)
+
     def _train_in_sequential_order(
         self,
         sequence_length,
@@ -145,6 +150,7 @@ class Xyz(Command):
                     loss = self.get_loss(updated_parameters, capture)
                     losses.append(loss.item())
             wandb.log({f"mean-losses": sum(losses) / len(losses)})
+            self._save_and_log_checkpoint(deformation_network)
 
     def _train_in_random_order(
         self,
@@ -195,6 +201,7 @@ class Xyz(Command):
                     losses.append(loss.item())
 
             wandb.log({f"mean-losses-new": sum(losses) / len(losses)})
+        self._save_and_log_checkpoint(deformation_network)
 
     def run(self):
         wandb.init(project="new-dynamic-gaussians")
