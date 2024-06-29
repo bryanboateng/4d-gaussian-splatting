@@ -216,7 +216,13 @@ class Xyz(Command):
             )
         )
         sequence_length = len(dataset_metadata["fn"])
-        parameters = self._load_and_freeze_parameters("params.pth")
+        parameters = self._load_and_freeze_parameters(
+            os.path.join(
+                self.data_directory_path,
+                self.sequence_name,
+                "params.pth",
+            )
+        )
         deformation_network = DeformationNetwork(7, sequence_length).cuda()
         optimizer = torch.optim.Adam(params=deformation_network.parameters(), lr=1e-3)
 
